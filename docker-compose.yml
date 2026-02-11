@@ -39,8 +39,10 @@ services:
     environment:
       DATABASE_URL: postgresql://kalshi_user:kalshi_pass@postgres:5432/kalshi_detector
       REDIS_URL: redis://redis:6379/0
-      KALSHI_API_KEY: ${KALSHI_API_KEY}
-      KALSHI_API_SECRET: ${KALSHI_API_SECRET}
+      KALSHI_API_KEY_ID: ${KALSHI_API_KEY_ID}
+      KALSHI_PRIVATE_KEY_PATH: /app/kalshi_private_key.key
+    volumes:
+      - ./backend/kalshi_private_key.key:/app/kalshi_private_key.key:ro
     ports:
       - "8000:8000"
     depends_on:
@@ -58,8 +60,10 @@ services:
     environment:
       DATABASE_URL: postgresql://kalshi_user:kalshi_pass@postgres:5432/kalshi_detector
       REDIS_URL: redis://redis:6379/0
-      KALSHI_API_KEY: ${KALSHI_API_KEY}
-      KALSHI_API_SECRET: ${KALSHI_API_SECRET}
+      KALSHI_API_KEY_ID: ${KALSHI_API_KEY_ID}
+      KALSHI_PRIVATE_KEY_PATH: /app/kalshi_private_key.key
+    volumes:
+      - ./backend/kalshi_private_key.key:/app/kalshi_private_key.key:ro
     command: celery -A app.tasks.monitor worker --loglevel=info
     depends_on:
       postgres:
@@ -76,8 +80,10 @@ services:
     environment:
       DATABASE_URL: postgresql://kalshi_user:kalshi_pass@postgres:5432/kalshi_detector
       REDIS_URL: redis://redis:6379/0
-      KALSHI_API_KEY: ${KALSHI_API_KEY}
-      KALSHI_API_SECRET: ${KALSHI_API_SECRET}
+      KALSHI_API_KEY_ID: ${KALSHI_API_KEY_ID}
+      KALSHI_PRIVATE_KEY_PATH: /app/kalshi_private_key.key
+    volumes:
+      - ./backend/kalshi_private_key.key:/app/kalshi_private_key.key:ro
     command: celery -A app.tasks.monitor beat --loglevel=info
     depends_on:
       postgres:

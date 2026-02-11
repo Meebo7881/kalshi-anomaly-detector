@@ -39,3 +39,8 @@ Thumbs.db
 # Logs
 logs/
 *.log
+
+# Kalshi Private Keys (NEVER COMMIT THESE!)
+**/kalshi_private_key.key
+*.key
+*.pem

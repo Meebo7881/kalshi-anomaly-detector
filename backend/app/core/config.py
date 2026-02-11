@@ -2,9 +2,9 @@ from pydantic_settings import BaseSettings
 from typing import Optional
 
 class Settings(BaseSettings):
-    # API Keys
-    KALSHI_API_KEY: str
-    KALSHI_API_SECRET: str
+    # Kalshi API Keys (New authentication method)
+    KALSHI_API_KEY_ID: str  # The API Key ID from Kalshi dashboard
+    KALSHI_PRIVATE_KEY_PATH: str = "/app/kalshi_private_key.key"  # Path to private key file
     
     # Database
     DATABASE_URL: str = "postgresql://kalshi_user:kalshi_pass@postgres:5432/kalshi_detector"

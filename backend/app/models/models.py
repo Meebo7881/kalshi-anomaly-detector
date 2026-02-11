@@ -27,7 +27,7 @@ class Trade(Base):
     trade_id = Column(String, unique=True)
     price = Column(Float, nullable=False)
     volume = Column(Integer, nullable=False)
-    side = Column(String)
+    side = Column(String, nullable=True)  # Made nullable
     timestamp = Column(DateTime, nullable=False, index=True)
     
     __table_args__ = (
