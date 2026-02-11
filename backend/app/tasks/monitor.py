@@ -9,6 +9,20 @@ import asyncio
 
 celery_app = Celery('tasks', broker=settings.REDIS_URL)
 
+# Define market types we want to prioritize
+PRIORITY_MARKET_TYPES = [
+    'KXPRES',   # Presidential elections
+    'KXCPI',    # CPI/Inflation
+    'KXFED',    # Federal Reserve
+    'KXBTC',    # Bitcoin
+    'KXETH',    # Ethereum
+    'KXXRP',    # Ripple
+    'KXGDP',    # GDP
+    'KXUNEMP',  # Unemployment
+    'KXNBA',    # NBA (non-parlay)
+    'KXNFL',    # NFL
+]
+
 @celery_app.task
 def update_market_data():
     db = SessionLocal()
@@ -16,11 +30,38 @@ def update_market_data():
     
     try:
         print("📊 Fetching markets from Kalshi...")
-        markets = asyncio.run(kalshi.get_markets(status="open"))
-        print(f"✅ Fetched {len(markets)} markets")
         
-        # Process first 10 markets for testing
-        for market in markets[:10]:
+        # Fetch all open markets
+        all_markets = asyncio.run(kalshi.get_markets(status="open", limit=1000))
+        print(f"   Found {len(all_markets)} open markets")
+        
+        # Prioritize non-sports markets
+        priority_markets = [
+            m for m in all_markets 
+            if any(m['ticker'].startswith(prefix) for prefix in PRIORITY_MARKET_TYPES)
+        ]
+        
+        # Take priority markets + some sports markets
+        if priority_markets:
+            print(f"   ✨ Found {len(priority_markets)} priority markets (crypto, politics, economics)")
+            markets = priority_markets[:100]
+        else:
+            print(f"   📊 Only sports markets available, taking sample")
+            markets = all_markets[:100]
+        
+        # Show breakdown
+        market_types = {}
+        for m in markets:
+            prefix = m['ticker'].split('-')[0]
+            market_types[prefix] = market_types.get(prefix, 0) + 1
+        
+        print(f"\n   Market breakdown:")
+        for mtype, count in sorted(market_types.items(), key=lambda x: x[1], reverse=True)[:5]:
+            print(f"     • {mtype}: {count}")
+        
+        print(f"\n✅ Processing {len(markets)} markets")
+        
+        for market in markets[:20]:  # Process 20 at a time
             ticker = market["ticker"]
             
             # Save or update market
@@ -33,24 +74,20 @@ def update_market_data():
                     close_date=datetime.fromisoformat(market["close_time"].replace('Z', '+00:00'))
                 )
                 db.add(db_market)
-                print(f"  • Added market: {ticker}")
             
-            # Fetch trades for this market
+            # Fetch trades
             try:
                 trades_data = asyncio.run(kalshi.get_trades(ticker))
-                print(f"  • Fetched {len(trades_data)} trades for {ticker}")
                 
                 if trades_data:
                     for trade in trades_data:
                         try:
-                            # Parse timestamp (handle both seconds and milliseconds)
                             created_time = trade.get("created_time", trade.get("ts", 0))
-                            if created_time > 9999999999:  # Milliseconds
+                            if created_time > 9999999999:
                                 timestamp = datetime.fromtimestamp(created_time / 1000)
-                            else:  # Seconds
+                            else:
                                 timestamp = datetime.fromtimestamp(created_time)
                             
-                            # Create trade record with flexible field handling
                             db_trade = Trade(
                                 ticker=ticker,
                                 trade_id=str(trade.get("trade_id", trade.get("id", f"{ticker}_{created_time}"))),
@@ -62,14 +99,10 @@ def update_market_data():
                             db.merge(db_trade)
                             
                         except Exception as e:
-                            print(f"    ⚠️  Error parsing trade: {e}")
-                            print(f"    Trade data: {trade}")
                             continue
                     
-                    print(f"  ✅ Stored {len(trades_data)} trades for {ticker}")
-                    
             except Exception as e:
-                print(f"  ⚠️  Error fetching trades for {ticker}: {e}")
+                print(f"  ⚠️  Error fetching trades for {ticker[:40]}: {e}")
                 continue
         
         db.commit()
@@ -96,12 +129,10 @@ def run_anomaly_detection():
         anomalies_found = 0
         
         for market in markets:
-            # Calculate baseline
             baseline = detector.calculate_baseline(market.ticker)
             if not baseline:
                 continue
             
-            # Get recent trades
             recent_trades = db.query(Trade).filter(
                 Trade.ticker == market.ticker,
                 Trade.timestamp >= datetime.utcnow() - timedelta(hours=1)
@@ -112,7 +143,6 @@ def run_anomaly_detection():
             
             total_volume = sum(t.volume for t in recent_trades)
             
-            # Check for volume anomaly
             is_anomaly, z_score = detector.detect_volume_anomaly(market.ticker, total_volume)
             
             if is_anomaly:
@@ -124,7 +154,7 @@ def run_anomaly_detection():
                     orderbook_imbalance=0
                 )
                 
-                print(f"  🚨 Anomaly detected in {market.ticker}! Score: {score:.2f}, Z-score: {z_score:.2f}")
+                print(f"  🚨 Anomaly in {market.ticker[:40]}! Score: {score:.2f}, Z: {z_score:.2f}")
                 
                 detector.log_anomaly(
                     ticker=market.ticker,
@@ -139,7 +169,7 @@ def run_anomaly_detection():
                 )
                 anomalies_found += 1
         
-        print(f"✅ Anomaly detection complete! Found {anomalies_found} anomalies")
+        print(f"✅ Detection complete! Found {anomalies_found} anomalies")
         
     except Exception as e:
         print(f"❌ Error in anomaly detection: {e}")
