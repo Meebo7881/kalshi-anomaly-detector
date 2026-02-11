@@ -2,22 +2,21 @@ version: '3.8'
 
 services:
   postgres:
-    image: postgres:15-alpine
+    image: postgres:15
     container_name: kalshi-postgres
     environment:
-      POSTGRES_DB: kalshi_detector
-      POSTGRES_USER: kalshi_user
-      POSTGRES_PASSWORD: kalshi_pass
+      POSTGRES_USER: ${POSTGRES_USER:-kalshi_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-kalshi_detector}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U kalshi_user -d kalshi_detector"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-kalshi_user} -d ${POSTGRES_DB:-kalshi_detector}"]
       interval: 10s
       timeout: 5s
       retries: 5
-    restart: unless-stopped
 
   redis:
     image: redis:7-alpine
@@ -27,9 +26,8 @@ services:
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
-      timeout: 3s
+      timeout: 5s
       retries: 5
-    restart: unless-stopped
 
   api:
     build:
@@ -37,12 +35,15 @@ services:
       dockerfile: Dockerfile
     container_name: kalshi-api
     environment:
-      DATABASE_URL: postgresql://kalshi_user:kalshi_pass@postgres:5432/kalshi_detector
-      REDIS_URL: redis://redis:6379/0
-      KALSHI_API_KEY_ID: ${KALSHI_API_KEY_ID}
-      KALSHI_PRIVATE_KEY_PATH: /app/kalshi_private_key.key
+      - DATABASE_URL=${DATABASE_URL}
+      - KALSHI_API_KEY_ID=${KALSHI_API_KEY_ID}
+      - KALSHI_PRIVATE_KEY_PATH=${KALSHI_PRIVATE_KEY_PATH:-/app/kalshi_private_key.key}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - DEBUG=${DEBUG:-true}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
     volumes:
-      - ./backend/kalshi_private_key.key:/app/kalshi_private_key.key:ro
+      - ./backend:/app
     ports:
       - "8000:8000"
     depends_on:
@@ -50,7 +51,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    restart: unless-stopped
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
   worker:
     build:
@@ -58,19 +59,22 @@ services:
       dockerfile: Dockerfile
     container_name: kalshi-worker
     environment:
-      DATABASE_URL: postgresql://kalshi_user:kalshi_pass@postgres:5432/kalshi_detector
-      REDIS_URL: redis://redis:6379/0
-      KALSHI_API_KEY_ID: ${KALSHI_API_KEY_ID}
-      KALSHI_PRIVATE_KEY_PATH: /app/kalshi_private_key.key
+      - DATABASE_URL=${DATABASE_URL}
+      - KALSHI_API_KEY_ID=${KALSHI_API_KEY_ID}
+      - KALSHI_PRIVATE_KEY_PATH=${KALSHI_PRIVATE_KEY_PATH:-/app/kalshi_private_key.key}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL:-redis://redis:6379/0}
+      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND:-redis://redis:6379/0}
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
     volumes:
-      - ./backend/kalshi_private_key.key:/app/kalshi_private_key.key:ro
-    command: celery -A app.tasks.monitor worker --loglevel=info
+      - ./backend:/app
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-    restart: unless-stopped
+    command: celery -A app.tasks.monitor worker --loglevel=info
 
   beat:
     build:
@@ -78,36 +82,35 @@ services:
       dockerfile: Dockerfile
     container_name: kalshi-beat
     environment:
-      DATABASE_URL: postgresql://kalshi_user:kalshi_pass@postgres:5432/kalshi_detector
-      REDIS_URL: redis://redis:6379/0
-      KALSHI_API_KEY_ID: ${KALSHI_API_KEY_ID}
-      KALSHI_PRIVATE_KEY_PATH: /app/kalshi_private_key.key
+      - DATABASE_URL=${DATABASE_URL}
+      - KALSHI_API_KEY_ID=${KALSHI_API_KEY_ID}
+      - KALSHI_PRIVATE_KEY_PATH=${KALSHI_PRIVATE_KEY_PATH:-/app/kalshi_private_key.key}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL:-redis://redis:6379/0}
+      - UPDATE_INTERVAL_SECONDS=${UPDATE_INTERVAL_SECONDS:-300}
+      - DETECTION_INTERVAL_SECONDS=${DETECTION_INTERVAL_SECONDS:-300}
     volumes:
-      - ./backend/kalshi_private_key.key:/app/kalshi_private_key.key:ro
-    command: celery -A app.tasks.monitor beat --loglevel=info
+      - ./backend:/app
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    restart: unless-stopped
+      - redis
+      - worker
+    command: celery -A app.tasks.monitor beat --loglevel=info
 
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-      args:
-        VITE_API_URL: http://localhost:8000/api/v1
     container_name: kalshi-frontend
+    environment:
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8000}
     ports:
-      - "3000:80"
+      - "3000:3000"
     depends_on:
       - api
-    restart: unless-stopped
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
 
 volumes:
   postgres_data:
-
-networks:
-  default:
-    name: kalshi-network
