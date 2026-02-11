@@ -9,18 +9,14 @@ import asyncio
 
 celery_app = Celery('tasks', broker=settings.REDIS_URL)
 
-# Define market types we want to prioritize
-PRIORITY_MARKET_TYPES = [
-    'KXPRES',   # Presidential elections
-    'KXCPI',    # CPI/Inflation
-    'KXFED',    # Federal Reserve
-    'KXBTC',    # Bitcoin
-    'KXETH',    # Ethereum
-    'KXXRP',    # Ripple
-    'KXGDP',    # GDP
-    'KXUNEMP',  # Unemployment
-    'KXNBA',    # NBA (non-parlay)
-    'KXNFL',    # NFL
+# Categories to monitor (customize this!)
+MONITORED_CATEGORIES = [
+    'Politics',
+    'Economics',
+    'Elections',
+    'Companies',
+    'Climate and Weather',
+    # Add more categories as needed
 ]
 
 @celery_app.task
@@ -30,24 +26,18 @@ def update_market_data():
     
     try:
         print("📊 Fetching markets from Kalshi...")
+        print(f"   Monitoring categories: {', '.join(MONITORED_CATEGORIES)}")
         
-        # Fetch all open markets
-        all_markets = asyncio.run(kalshi.get_markets(status="open", limit=1000))
-        print(f"   Found {len(all_markets)} open markets")
+        # Get markets from specific categories
+        markets = asyncio.run(
+            kalshi.get_all_markets_from_events(categories=MONITORED_CATEGORIES)
+        )
         
-        # Prioritize non-sports markets
-        priority_markets = [
-            m for m in all_markets 
-            if any(m['ticker'].startswith(prefix) for prefix in PRIORITY_MARKET_TYPES)
-        ]
+        if not markets:
+            print("   No markets in monitored categories, fetching all open markets...")
+            markets = asyncio.run(kalshi.get_markets(status="open", limit=200))
         
-        # Take priority markets + some sports markets
-        if priority_markets:
-            print(f"   ✨ Found {len(priority_markets)} priority markets (crypto, politics, economics)")
-            markets = priority_markets[:100]
-        else:
-            print(f"   📊 Only sports markets available, taking sample")
-            markets = all_markets[:100]
+        print(f"✅ Found {len(markets)} markets to monitor")
         
         # Show breakdown
         market_types = {}
@@ -55,16 +45,14 @@ def update_market_data():
             prefix = m['ticker'].split('-')[0]
             market_types[prefix] = market_types.get(prefix, 0) + 1
         
-        print(f"\n   Market breakdown:")
-        for mtype, count in sorted(market_types.items(), key=lambda x: x[1], reverse=True)[:5]:
+        print(f"\n   Market type breakdown:")
+        for mtype, count in sorted(market_types.items(), key=lambda x: x[1], reverse=True)[:10]:
             print(f"     • {mtype}: {count}")
         
-        print(f"\n✅ Processing {len(markets)} markets")
-        
-        for market in markets[:20]:  # Process 20 at a time
+        # Process markets
+        for market in markets[:50]:  # Process 50 at a time
             ticker = market["ticker"]
             
-            # Save or update market
             db_market = db.query(Market).filter_by(ticker=ticker).first()
             if not db_market:
                 db_market = Market(
@@ -102,7 +90,6 @@ def update_market_data():
                             continue
                     
             except Exception as e:
-                print(f"  ⚠️  Error fetching trades for {ticker[:40]}: {e}")
                 continue
         
         db.commit()

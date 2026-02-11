@@ -10,18 +10,10 @@ class KalshiAPI:
     BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
     
     def __init__(self, api_key_id: str, private_key_path: str):
-        """
-        Initialize Kalshi API client with new authentication method.
-        
-        Args:
-            api_key_id: Your API Key ID (looks like: a952bcbe-ec3b-4b5b-b8f9-11dae589608c)
-            private_key_path: Path to your private key file (.key)
-        """
         self.api_key_id = api_key_id
         self.private_key = self._load_private_key(private_key_path)
         
     def _load_private_key(self, key_path: str):
-        """Load the RSA private key from file."""
         try:
             with open(key_path, 'rb') as key_file:
                 private_key = serialization.load_pem_private_key(
@@ -34,14 +26,9 @@ class KalshiAPI:
             raise
     
     def _create_signature(self, timestamp: str, method: str, path: str) -> str:
-        """Create RSA-PSS signature for the request."""
-        # Remove query parameters before signing
         path_without_query = path.split('?')[0]
-        
-        # Create message: timestamp + method + path
         message = f"{timestamp}{method}{path_without_query}".encode('utf-8')
         
-        # Sign with RSA-PSS
         signature = self.private_key.sign(
             message,
             padding.PSS(
@@ -51,12 +38,10 @@ class KalshiAPI:
             hashes.SHA256()
         )
         
-        # Return base64 encoded
         return base64.b64encode(signature).decode('utf-8')
     
     def _get_headers(self, method: str, path: str) -> Dict[str, str]:
-        """Generate authentication headers for the request."""
-        timestamp = str(int(time.time() * 1000))  # Milliseconds
+        timestamp = str(int(time.time() * 1000))
         signature = self._create_signature(timestamp, method, path)
         
         return {
@@ -66,7 +51,37 @@ class KalshiAPI:
             "Content-Type": "application/json"
         }
     
-    async def get_markets(self, status: str = "open", limit: int = 100) -> List[Dict]:
+    async def get_events(self, status: str = "open", limit: int = 200) -> List[Dict]:
+        """Fetch events (long-term questions)."""
+        path = "/trade-api/v2/events"
+        headers = self._get_headers("GET", path)
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{self.BASE_URL}/events",
+                headers=headers,
+                params={"status": status, "limit": limit},
+                timeout=30.0
+            )
+            response.raise_for_status()
+            return response.json().get("events", [])
+    
+    async def get_markets_for_event(self, event_ticker: str, status: str = "open") -> List[Dict]:
+        """Get all markets for a specific event."""
+        path = "/trade-api/v2/markets"
+        headers = self._get_headers("GET", path)
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{self.BASE_URL}/markets",
+                headers=headers,
+                params={"event_ticker": event_ticker, "status": status, "limit": 1000},
+                timeout=30.0
+            )
+            response.raise_for_status()
+            return response.json().get("markets", [])
+    
+    async def get_markets(self, status: str = "open", limit: int = 1000) -> List[Dict]:
         """Fetch active markets."""
         path = "/trade-api/v2/markets"
         headers = self._get_headers("GET", path)
@@ -75,10 +90,38 @@ class KalshiAPI:
             response = await client.get(
                 f"{self.BASE_URL}/markets",
                 headers=headers,
-                params={"status": status, "limit": limit}
+                params={"status": status, "limit": min(limit, 1000)},
+                timeout=30.0
             )
             response.raise_for_status()
             return response.json().get("markets", [])
+    
+    async def get_all_markets_from_events(self, categories: List[str] = None) -> List[Dict]:
+        """Get markets from specific event categories."""
+        all_markets = []
+        
+        # Get events
+        events = await self.get_events(status="open", limit=200)
+        
+        # Filter by category if specified
+        if categories:
+            events = [e for e in events if e.get('category') in categories]
+        
+        print(f"Found {len(events)} events in specified categories")
+        
+        # Get markets for each event
+        for event in events[:50]:  # Limit to 50 events to avoid rate limits
+            try:
+                event_ticker = event['event_ticker']
+                markets = await self.get_markets_for_event(event_ticker)
+                if markets:
+                    all_markets.extend(markets)
+                    print(f"  • {event_ticker}: {len(markets)} markets")
+            except Exception as e:
+                print(f"  ⚠️  Error fetching markets for {event_ticker}: {e}")
+                continue
+        
+        return all_markets
     
     async def get_trades(self, ticker: str, min_ts: Optional[int] = None) -> List[Dict]:
         """Fetch trade history for a market."""
@@ -93,7 +136,8 @@ class KalshiAPI:
             response = await client.get(
                 f"{self.BASE_URL}/markets/trades",
                 headers=headers,
-                params=params
+                params=params,
+                timeout=30.0
             )
             response.raise_for_status()
             return response.json().get("trades", [])
@@ -106,7 +150,8 @@ class KalshiAPI:
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 f"{self.BASE_URL}/markets/{ticker}/orderbook",
-                headers=headers
+                headers=headers,
+                timeout=30.0
             )
             response.raise_for_status()
             return response.json()
