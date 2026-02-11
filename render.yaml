@@ -1,0 +1,90 @@
+databases:
+  - name: kalshi-detector-db
+    databaseName: kalshi_detector
+    user: kalshi_user
+    plan: free
+
+  - name: kalshi-detector-redis
+    type: redis
+    plan: free
+
+services:
+  # FastAPI API
+  - type: web
+    name: kalshi-detector-api
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: kalshi-detector-db
+          property: connectionString
+      - key: REDIS_URL
+        fromDatabase:
+          name: kalshi-detector-redis
+          property: connectionString
+      - key: KALSHI_API_KEY_ID
+        sync: false
+      - key: KALSHI_PRIVATE_KEY_PATH
+        value: /app/kalshi_private_key.key
+      - key: PORT
+        value: "8000"
+    healthCheckPath: /health
+
+  # Celery worker
+  - type: worker
+    name: kalshi-detector-worker
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    dockerCommand: celery -A app.tasks.monitor worker --loglevel=info
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: kalshi-detector-db
+          property: connectionString
+      - key: REDIS_URL
+        fromDatabase:
+          name: kalshi-detector-redis
+          property: connectionString
+      - key: KALSHI_API_KEY_ID
+        sync: false
+      - key: KALSHI_PRIVATE_KEY_PATH
+        value: /app/kalshi_private_key.key
+
+  # Celery beat
+  - type: worker
+    name: kalshi-detector-beat
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    dockerCommand: celery -A app.tasks.monitor beat --loglevel=info
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: kalshi-detector-db
+          property: connectionString
+      - key: REDIS_URL
+        fromDatabase:
+          name: kalshi-detector-redis
+          property: connectionString
+      - key: KALSHI_API_KEY_ID
+        sync: false
+      - key: KALSHI_PRIVATE_KEY_PATH
+        value: /app/kalshi_private_key.key
+
+  # Frontend (Nginx + static build)
+  - type: web
+    name: kalshi-detector-frontend
+    runtime: docker
+    dockerfilePath: ./frontend/Dockerfile
+    dockerContext: ./frontend
+    envVars:
+      - key: NEXT_PUBLIC_API_URL
+        # Use Render internal URL or public URL of API web service; initially:
+        value: https://kalshi-detector-api.onrender.com
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /
