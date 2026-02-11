@@ -50,7 +50,7 @@ def update_market_data():
             print(f"     • {mtype}: {count}")
         
         # Process markets
-        for market in markets[:50]:  # Process 50 at a time
+        for market in markets:  # removed cap [:50]:
             ticker = market["ticker"]
             
             db_market = db.query(Market).filter_by(ticker=ticker).first()
