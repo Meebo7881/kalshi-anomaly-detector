@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 from datetime import datetime, timedelta
 
 from app.core.config import settings
@@ -27,10 +28,11 @@ def read_root():
 @app.get("/health")
 def health_check(db: Session = Depends(get_db)):
     try:
-        db.execute("SELECT 1")
+        # Fixed: Use text() for raw SQL in SQLAlchemy 2.0
+        db.execute(text("SELECT 1"))
         return {"status": "healthy", "database": "connected"}
     except Exception as e:
-        raise HTTPException(status_code=503, detail="Database unavailable")
+        raise HTTPException(status_code=503, detail=f"Database unavailable: {str(e)}")
 
 @app.get(f"{settings.API_V1_STR}/anomalies")
 def get_anomalies(severity: str = None, days: int = 7, db: Session = Depends(get_db)):
@@ -62,7 +64,7 @@ def get_markets(db: Session = Depends(get_db)):
         "close_date": m.close_date.isoformat() if m.close_date else None
     } for m in markets]
 
-@app.get(f"{settings.API_V1_STR}/markets/{ticker}/anomalies")
+@app.get(f"{settings.API_V1_STR}/markets/{{ticker}}/anomalies")
 def get_market_anomalies(ticker: str, db: Session = Depends(get_db)):
     anomalies = db.query(Anomaly).filter_by(ticker=ticker)\
         .order_by(Anomaly.detected_at.desc()).limit(50).all()
