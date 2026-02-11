@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from app.models.models import Trade, MarketBaseline, Anomaly
+from app.models.models import Trade, Baseline, Anomaly
 from datetime import datetime, timedelta
 import numpy as np
 
@@ -23,7 +23,7 @@ class AnomalyDetector:
         prices = [t.price for t in trades]
         
         # Check if baseline exists
-        baseline = self.db.query(MarketBaseline).filter_by(ticker=ticker).first()
+        baseline = self.db.query(Baseline).filter_by(ticker=ticker).first()
         
         if baseline:
             # Update existing
@@ -34,7 +34,7 @@ class AnomalyDetector:
             baseline.last_updated = datetime.utcnow()
         else:
             # Create new
-            baseline = MarketBaseline(
+            baseline = Baseline(
                 ticker=ticker,
                 avg_volume=float(np.mean(volumes)),
                 std_volume=float(np.std(volumes)),
@@ -50,7 +50,7 @@ class AnomalyDetector:
     
     def detect_volume_anomaly(self, ticker: str, current_volume: float, threshold: float = 3.0):
         """Detect if current volume is anomalous."""
-        baseline = self.db.query(MarketBaseline).filter_by(ticker=ticker).first()
+        baseline = self.db.query(Baseline).filter_by(ticker=ticker).first()
         
         if not baseline or baseline.std_volume == 0:
             return False, 0
