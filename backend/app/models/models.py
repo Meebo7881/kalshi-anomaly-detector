@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, JSON, ForeignKey
+from sqlalchemy import Column, Integer, String, Float, DateTime, JSON, ForeignKey,Boolean
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from app.core.database import Base
@@ -28,6 +28,10 @@ class Trade(Base):
     volume = Column(Integer, nullable=False)
     side = Column(String)
     timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+
+    # trader tracking
+    trader_id = Column(String, nullable=True, index=True)  # Kalshi user ID if available
+    trade_value_usd = Column(Float, nullable=True)  # volume * price
     
     market = relationship("Market", back_populates="trades")
 
@@ -55,3 +59,15 @@ class Baseline(Base):
     calculated_at = Column(DateTime, default=datetime.utcnow, index=True)
     
     market = relationship("Market", back_populates="baselines")
+
+class TraderProfile(Base):
+    __tablename__ = "trader_profiles"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    trader_id = Column(String, unique=True, index=True)
+    first_seen = Column(DateTime)
+    total_trades = Column(Integer, default=0)
+    total_volume_usd = Column(Float, default=0.0)
+    avg_trade_size_usd = Column(Float, default=0.0)
+    is_whale = Column(Boolean, default=False)
+    last_updated = Column(DateTime)

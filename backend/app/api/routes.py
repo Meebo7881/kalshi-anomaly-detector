@@ -4,7 +4,8 @@ from typing import List
 from datetime import datetime, timedelta
 
 from app.core.database import get_db
-from app.models.models import Market, Anomaly, Trade
+from app.models.models import Market, Anomaly, Trade, TraderProfile
+from app.services.detector import AnomalyDetector
 
 router = APIRouter()
 
@@ -123,4 +124,73 @@ async def get_stats(db: Session = Depends(get_db)):
             "medium": medium_severity,
             "low": low_severity
         }
+    }
+
+@router.get("/anomalies/{ticker}/details")
+async def get_anomaly_details(ticker: str, db: Session = Depends(get_db)):
+    """Get detailed anomaly info including VPIN, whales, correlations."""
+    detector = AnomalyDetector(db)
+    
+    # Get recent anomalies
+    anomalies = (
+        db.query(Anomaly)
+        .filter(Anomaly.ticker == ticker)
+        .order_by(Anomaly.detected_at.desc())
+        .limit(10)
+        .all()
+    )
+    
+    # Get current VPIN
+    vpin = detector.calculate_vpin(ticker)
+    
+    # Get whale trades
+    whales = detector.detect_whale_trades(ticker, threshold_usd=2000)
+    
+    # Get price-volume correlation
+    is_correlated, corr_score = detector.detect_price_volume_correlation(ticker)
+    
+    return {
+        "ticker": ticker,
+        "vpin": vpin,
+        "whale_trades": whales,
+        "price_volume_correlation": {
+            "is_suspicious": is_correlated,
+            "score": corr_score
+        },
+        "recent_anomalies": [
+            {
+                "id": a.id,
+                "score": a.score,
+                "severity": a.severity,
+                "detected_at": a.detected_at.isoformat(),
+                "details": a.details
+            }
+            for a in anomalies
+        ]
+    }
+
+
+@router.get("/stats/whales")
+async def get_whale_stats(db: Session = Depends(get_db)):
+    """Get top whale traders across all markets."""
+    profiles = (
+        db.query(TraderProfile)
+        .filter(TraderProfile.is_whale == True)
+        .order_by(TraderProfile.total_volume_usd.desc())
+        .limit(20)
+        .all()
+    )
+    
+    return {
+        "whale_count": len(profiles),
+        "top_whales": [
+            {
+                "trader_id": p.trader_id,
+                "total_trades": p.total_trades,
+                "total_volume_usd": p.total_volume_usd,
+                "avg_trade_size_usd": p.avg_trade_size_usd,
+                "first_seen": p.first_seen.isoformat() if p.first_seen else None
+            }
+            for p in profiles
+        ]
     }
