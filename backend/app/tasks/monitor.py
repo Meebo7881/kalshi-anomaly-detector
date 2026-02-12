@@ -12,17 +12,20 @@ celery_app = Celery('tasks', broker=settings.REDIS_URL)
 # Categories to monitor (customize this!)
 MONITORED_CATEGORIES = [
     'Politics',
+    'Entertainment',
+    'Science and Technology',
     'Economics',
+    'World',
     'Elections',
     'Companies',
-    'Climate and Weather',
+    'Social',
     # Add more categories as needed
 ]
 
 @celery_app.task
 def update_market_data():
     db = SessionLocal()
-    kalshi = KalshiAPI(settings.KALSHI_API_KEY_ID, settings.KALSHI_PRIVATE_KEY_PATH)
+    kalshi = KalshiAPI(settings.KALSHI_API_KEY_ID, settings.KALSHI_PRIVATE_KEY_PATH, max_rps=20.0)
     
     try:
         print("📊 Fetching markets from Kalshi...")
