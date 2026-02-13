@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, JSON, ForeignKey,Boolean
+from sqlalchemy import Column, Integer, String, Float, DateTime, JSON, ForeignKey, Boolean, Index
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from app.core.database import Base
@@ -45,6 +45,13 @@ class Anomaly(Base):
     severity = Column(String)  # low, medium, high
     details = Column(JSON)
     detected_at = Column(DateTime, default=datetime.utcnow, index=True)
+    resolved = Column(Boolean, default=False, index=True)
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index('idx_ticker_detected', 'ticker', 'detected_at'),
+        Index('idx_severity_resolved', 'severity', 'resolved'),
+    )
     
     market = relationship("Market", back_populates="anomalies")
 
@@ -55,10 +62,15 @@ class Baseline(Base):
     ticker = Column(String, ForeignKey("markets.ticker"), index=True, nullable=False)
     avg_volume = Column(Float, nullable=False)
     std_volume = Column(Float, nullable=False)
+    avg_price = Column(Float)              # ADD THIS
+    std_price = Column(Float)              # ADD THIS
     avg_price_change = Column(Float)
+    avg_trades_per_hour = Column(Float)    # ADD THIS
     calculated_at = Column(DateTime, default=datetime.utcnow, index=True)
+    last_updated = Column(DateTime)        # ADD THIS
     
     market = relationship("Market", back_populates="baselines")
+
 
 class TraderProfile(Base):
     __tablename__ = "trader_profiles"

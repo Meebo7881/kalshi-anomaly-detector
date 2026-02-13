@@ -1,29 +1,20 @@
 from sqlalchemy.orm import Session
 from app.models.models import Market, Trade, Baseline, Anomaly, TraderProfile
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 import numpy as np
 from typing import Tuple, Dict, List, Optional
-import logging
-
-logger = logging.getLogger(__name__)
 
 
 class AnomalyDetector:
     def __init__(self, db: Session):
         self.db = db
-        self.config = {
-            "whale_threshold_usd": 5000,
-            "volume_zscore_threshold": 3.0,
-            "vpin_window_trades": 50
-        }
 
     # -------------------------------------------------------------------------
     # 1. BASELINE CALCULATION
     # -------------------------------------------------------------------------
-
     def calculate_baseline(self, ticker: str, window_days: int = 30) -> Optional[Baseline]:
         """Calculate rolling 30-day baseline statistics."""
-        cutoff = datetime.now(timezone.utc) - timedelta(days=window_days)
+        cutoff = datetime.utcnow() - timedelta(days=window_days)
         trades = (
             self.db.query(Trade)
             .filter(Trade.ticker == ticker, Trade.timestamp >= cutoff)
@@ -37,7 +28,6 @@ class AnomalyDetector:
         prices = [t.price for t in trades]
 
         baseline = self.db.query(Baseline).filter_by(ticker=ticker).first()
-
         if baseline:
             # Update existing
             baseline.avg_volume = float(np.mean(volumes))
@@ -45,7 +35,7 @@ class AnomalyDetector:
             baseline.avg_price = float(np.mean(prices))
             baseline.std_price = float(np.std(prices))
             baseline.avg_trades_per_hour = len(trades) / (window_days * 24)
-            baseline.last_updated = datetime.now(timezone.utc)
+            baseline.last_updated = datetime.utcnow()
         else:
             # Create new
             baseline = Baseline(
@@ -55,7 +45,7 @@ class AnomalyDetector:
                 avg_price=float(np.mean(prices)),
                 std_price=float(np.std(prices)),
                 avg_trades_per_hour=len(trades) / (window_days * 24),
-                last_updated=datetime.now(timezone.utc),
+                last_updated=datetime.utcnow(),
             )
             self.db.add(baseline)
 
@@ -65,13 +55,11 @@ class AnomalyDetector:
     # -------------------------------------------------------------------------
     # 2. VOLUME ANOMALY
     # -------------------------------------------------------------------------
-
     def detect_volume_anomaly(
         self, ticker: str, current_volume: float, threshold: float = 3.0
     ) -> Tuple[bool, float]:
         """Detect if current volume is anomalous (Z-score)."""
         baseline = self.db.query(Baseline).filter_by(ticker=ticker).first()
-
         if not baseline or baseline.std_volume == 0:
             return False, 0.0
 
@@ -81,7 +69,6 @@ class AnomalyDetector:
     # -------------------------------------------------------------------------
     # 3. ORDER FLOW TOXICITY (VPIN)
     # -------------------------------------------------------------------------
-
     def calculate_vpin(self, ticker: str, window_trades: int = 50) -> float:
         """
         Calculate VPIN (Volume-synchronized Probability of Informed Trading).
@@ -114,10 +101,8 @@ class AnomalyDetector:
     # -------------------------------------------------------------------------
     # 4. WHALE WALLET DETECTION
     # -------------------------------------------------------------------------
-
     def detect_whale_trades(
-        self, ticker: str, threshold_usd: float = None, lookback_hours: int = 24
-    ) -> List[Dict]:
+        self, ticker: str, threshold_usd: float = None, lookback_hours: int = 24) -> List[Dict]:
         """
         Flag abnormally large trades (whales).
         Returns list of whale trades with trader_id, value, timestamp.
@@ -126,88 +111,81 @@ class AnomalyDetector:
             threshold_usd = self.config["whale_threshold_usd"]
 
         cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
-        trades = self.db.query(Trade).filter(
-            Trade.ticker == ticker, 
-            Trade.timestamp >= cutoff
-        ).all()
+        trades = self.db.query(Trade).filter(Trade.ticker == ticker, Trade.timestamp >= cutoff).all()
 
         whales = []
         for trade in trades:
-            # CORRECTED USD CALCULATION - Kalshi prices are in cents (0-100)
+            # CORRECTED USD CALCULATION
             trade_value_usd = trade.volume * (trade.price / 100.0)
 
             if trade_value_usd >= threshold_usd:
-                whales.append({
-                    "trade_id": trade.trade_id,
-                    "trader_id": trade.trader_id or "unknown",
-                    "value_usd": round(trade_value_usd, 2),
-                    "volume": trade.volume,
-                    "price": trade.price,
-                    "timestamp": trade.timestamp.isoformat()
-                })
+                    whales.append({
+                        "trade_id": trade.trade_id,
+                        "trader_id": trade.trader_id or "unknown",
+                        "value_usd": round(trade_value_usd, 2),
+                        "volume": trade.volume,
+                        "price": trade.price,
+                        "timestamp": trade.timestamp.isoformat()
+                    })
 
         return whales
 
     def update_trader_profiles(self, lookback_days: int = 7):
-        """Maintain trader profiles to identify new/suspicious wallets."""
-        cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
-        trades = self.db.query(Trade).filter(Trade.timestamp >= cutoff).all()
+    cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+    trades = self.db.query(Trade).filter(Trade.timestamp >= cutoff).all()
 
-        trader_stats = {}
-        for trade in trades:
-            if not trade.trader_id:
-                continue
+    trader_stats = {}
+    for trade in trades:
+        if not trade.trader_id:
+            continue
 
-            if trade.trader_id not in trader_stats:
-                trader_stats[trade.trader_id] = {
-                    "first_seen": trade.timestamp,
-                    "total_trades": 0,
-                    "total_volume_usd": 0.0,
-                }
+        if trade.trader_id not in trader_stats:
+            trader_stats[trade.trader_id] = {
+                "first_seen": trade.timestamp,
+                "total_trades": 0,
+                "total_volume_usd": 0.0,
+            }
 
-            # CORRECTED USD CALCULATION
-            trade_value_usd = trade.volume * (trade.price / 100.0)
-            trader_stats[trade.trader_id]["total_trades"] += 1
-            trader_stats[trade.trader_id]["total_volume_usd"] += trade_value_usd
+        # CORRECTED USD CALCULATION
+        trade_value_usd = trade.volume * (trade.price / 100.0)
+        trader_stats[trade.trader_id]["total_trades"] += 1
+        trader_stats[trade.trader_id]["total_volume_usd"] += trade_value_usd
 
-        # Update profiles
-        for trader_id, stats in trader_stats.items():
-            profile = self.db.query(TraderProfile).filter_by(trader_id=trader_id).first()
-            avg_trade_size = stats["total_volume_usd"] / stats["total_trades"]
-            is_whale = stats["total_volume_usd"] > 50000
+    # Update profiles
+    for trader_id, stats in trader_stats.items():
+        profile = self.db.query(TraderProfile).filter_by(trader_id=trader_id).first()
+        avg_trade_size = stats["total_volume_usd"] / stats["total_trades"]
+        is_whale = stats["total_volume_usd"] > 50000
 
-            if not profile:
-                profile = TraderProfile(
-                    trader_id=trader_id,
-                    first_seen=stats["first_seen"],
-                    total_trades=stats["total_trades"],
-                    total_volume_usd=stats["total_volume_usd"],
-                    avg_trade_size_usd=avg_trade_size,
-                    is_whale=is_whale,
-                    last_updated=datetime.now(timezone.utc)
-                )
-                self.db.add(profile)
-            else:
-                profile.total_trades = stats["total_trades"]
-                profile.total_volume_usd = stats["total_volume_usd"]
-                profile.avg_trade_size_usd = avg_trade_size
-                profile.is_whale = is_whale
-                profile.last_updated = datetime.now(timezone.utc)
+        if not profile:
+            profile = TraderProfile(
+                trader_id=trader_id,
+                first_seen=stats["first_seen"],
+                total_trades=stats["total_trades"],
+                total_volume_usd=stats["total_volume_usd"],
+                avg_trade_size_usd=avg_trade_size,
+                is_whale=is_whale,
+                last_updated=datetime.now(timezone.utc)
+            )
+            self.db.add(profile)
+        else:
+            profile.total_trades = stats["total_trades"]
+            profile.total_volume_usd = stats["total_volume_usd"]
+            profile.avg_trade_size_usd = avg_trade_size
+            profile.is_whale = is_whale
+            profile.last_updated = datetime.now(timezone.utc)
 
-        self.db.commit()
+    self.db.commit()
 
     # -------------------------------------------------------------------------
     # 5. PRICE + VOLUME SPIKE CORRELATION
     # -------------------------------------------------------------------------
-
-    def detect_price_volume_correlation(
-        self, ticker: str, lookback_hours: int = 1
-    ) -> Tuple[bool, float]:
+    def detect_price_volume_correlation(self, ticker: str, lookback_hours: int = 1) -> Tuple[bool, float]:
         """
         Detect coordinated price jump + volume surge (front-running signal).
         Returns (is_suspicious, correlation_score).
         """
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
+        cutoff = datetime.utcnow() - timedelta(hours=lookback_hours)
         trades = (
             self.db.query(Trade)
             .filter(Trade.ticker == ticker, Trade.timestamp >= cutoff)
@@ -221,10 +199,8 @@ class AnomalyDetector:
         # Calculate price change
         first_price = trades[0].price
         last_price = trades[-1].price
-
         if first_price == 0:
             return False, 0.0
-
         price_change = abs(last_price - first_price) / first_price
 
         # Calculate volume surge
@@ -245,7 +221,6 @@ class AnomalyDetector:
     # -------------------------------------------------------------------------
     # 6. AGGRESSIVE TIME-TO-RESOLUTION URGENCY
     # -------------------------------------------------------------------------
-
     def calculate_urgency_score(self, days_to_close: int) -> float:
         """
         More aggressive urgency scoring.
@@ -269,7 +244,6 @@ class AnomalyDetector:
     # -------------------------------------------------------------------------
     # 7. COMPOSITE ANOMALY SCORE
     # -------------------------------------------------------------------------
-
     def calculate_anomaly_score(
         self,
         volume_zscore: float,
@@ -286,7 +260,7 @@ class AnomalyDetector:
         # Volume component (0-5)
         volume_score = min(abs(volume_zscore) / 2, 5.0)
 
-        # Price CAR component (0-3) - currently unused
+        # Price CAR component (0-3) - currently unused; wire up when you have price model
         price_score = min(abs(price_car) / 2, 3.0)
 
         # Urgency (0-4) - aggressive weighting
@@ -309,66 +283,61 @@ class AnomalyDetector:
             + corr_score
             + whale_score
         )
-
         return min(total, 10.0)
 
     # -------------------------------------------------------------------------
     # 8. LOG ANOMALY
     # -------------------------------------------------------------------------
+    def log_anomaly(self, ticker: str, anomaly_type: str, score: float, details: Dict) -> Anomaly:
+    '''
+    Log anomaly with deduplication logic.
+    Prevents duplicate anomalies from cluttering the dashboard.
+    '''
+    # Check for recent unresolved anomaly of same type
+    lookback = datetime.now(timezone.utc) - timedelta(hours=1)
 
-    def log_anomaly(
-        self, ticker: str, anomaly_type: str, score: float, details: Dict
-    ) -> Anomaly:
-        """
-        Log anomaly with deduplication logic.
-        Prevents duplicate anomalies from cluttering the dashboard.
-        """
-        # Check for recent unresolved anomaly of same type
-        lookback = datetime.now(timezone.utc) - timedelta(hours=1)
-
-        existing = (
-            self.db.query(Anomaly)
-            .filter(
-                Anomaly.ticker == ticker,
-                Anomaly.anomaly_type == anomaly_type,
-                Anomaly.detected_at >= lookback,
-                Anomaly.resolved == False
-            )
-            .order_by(Anomaly.detected_at.desc())
-            .first()
+    existing = (
+        self.db.query(Anomaly)
+        .filter(
+            Anomaly.ticker == ticker,
+            Anomaly.anomaly_type == anomaly_type,
+            Anomaly.detected_at >= lookback,
+            Anomaly.resolved == False
         )
+        .order_by(Anomaly.detected_at.desc())
+        .first()
+    )
 
-        if existing:
-            # Update existing anomaly instead of creating duplicate
-            logger.info(f"Updating existing anomaly {existing.id} for {ticker}")
-            existing.score = max(existing.score, score)
-            existing.details = details
-            existing.severity = self._calculate_severity(existing.score)
-            self.db.commit()
-            return existing
-
-        # No existing anomaly - create new one
-        severity = self._calculate_severity(score)
-        anomaly = Anomaly(
-            ticker=ticker,
-            anomaly_type=anomaly_type,
-            score=score,
-            severity=severity,
-            details=details,
-            detected_at=datetime.now(timezone.utc),
-            resolved=False
-        )
-        self.db.add(anomaly)
+    if existing:
+        # Update existing anomaly instead of creating duplicate
+        logger.info(f"Updating existing anomaly {existing.id} for {ticker}")
+        existing.score = max(existing.score, score)
+        existing.details = details
+        existing.severity = self._calculate_severity(existing.score)
         self.db.commit()
-        return anomaly
+        return existing
 
-    def _calculate_severity(self, score: float) -> str:
-        """Calculate severity level from score."""
-        if score >= 8.0:
-            return "critical"
-        elif score >= 7.0:
-            return "high"
-        elif score >= 5.0:
-            return "medium"
-        else:
-            return "low"
+    # No existing anomaly - create new one
+    severity = self._calculate_severity(score)
+    anomaly = Anomaly(
+        ticker=ticker,
+        anomaly_type=anomaly_type,
+        score=score,
+        severity=severity,
+        details=details,
+        detected_at=datetime.now(timezone.utc),
+        resolved=False
+    )
+    self.db.add(anomaly)
+    self.db.commit()
+    return anomaly
+
+def _calculate_severity(self, score: float) -> str:
+    if score >= 8.0:
+        return "critical"
+    elif score >= 7.0:
+        return "high"
+    elif score >= 5.0:
+        return "medium"
+    else:
+        return "low"

@@ -8,22 +8,6 @@ from app.core.database import get_db
 from app.models.models import Market, Anomaly, Trade, TraderProfile
 from app.services.detector import AnomalyDetector
 
-def format_anomaly(anomaly):
-    """Format anomaly for API response."""
-    return {
-        "id": anomaly.id,
-        "ticker": anomaly.ticker,
-        "anomaly_type": anomaly.anomaly_type,
-        "score": anomaly.score,
-        "severity": anomaly.severity,
-        "details": anomaly.details,
-        "detected_at": anomaly.detected_at.isoformat(),
-        "market": {
-            "title": anomaly.market.title,
-            "category": anomaly.market.category
-        } if anomaly.market else None
-    }
-
 router = APIRouter()
 
 @router.get("/health")
@@ -31,41 +15,19 @@ async def health():
     return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
 
 @router.get("/markets")
-async def get_markets(
-    skip: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=500),
-    category: Optional[str] = None,
-    db: Session = Depends(get_db)
-):
-    """Get all monitored markets with pagination."""
-    query = db.query(Market)
-    
-    # Filter by category if provided
-    if category:
-        query = query.filter(Market.category == category)
-    
-    # Get total count
-    total = query.count()
-    
-    # Get paginated results
-    markets = query.order_by(Market.ticker).offset(skip).limit(limit).all()
-    
-    # Return paginated format matching frontend expectations
-    return {
-        "total": total,
-        "items": [
-            {
-                "ticker": m.ticker,
-                "title": m.title,
-                "category": m.category,
-                "status": m.status,
-                "close_date": m.close_date.isoformat() if m.close_date else None,
-            }
-            for m in markets
-        ],
-        "skip": skip,
-        "limit": limit
-    }
+async def get_markets(db: Session = Depends(get_db)):
+    """Get all monitored markets."""
+    markets = db.query(Market).all()
+    return [
+        {
+            "ticker": m.ticker,
+            "title": m.title,
+            "category": m.category,
+            "status": m.status,
+            "close_date": m.close_date.isoformat() if m.close_date else None
+        }
+        for m in markets
+    ]
 
 @router.get("/anomalies")
 async def get_anomalies(
