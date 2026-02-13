@@ -51,7 +51,7 @@ def update_market_data(self):
     kalshi = KalshiAPI(
     api_key_id=settings.KALSHI_API_KEY_ID,
     private_key_path=settings.KALSHI_PRIVATE_KEY_PATH,
-    max_rps=20.0,
+    max_rps=8.0,
     redis_url=settings.REDIS_URL
 )
 
