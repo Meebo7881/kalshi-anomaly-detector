@@ -14,15 +14,18 @@ export const fetchAnomalies = async (severity = null, days = 7) => {
   if (severity) params.severity = severity;
   
   const response = await api.get('/anomalies', { params });
-  return response.data;
+  // FIX: Return the items array, not the whole response object
+  return response.data.items || [];
 };
 
 export const fetchMarkets = async () => {
   const response = await api.get('/markets');
-  return response.data;
+  // FIX: Return the items array, not the whole response object
+  return response.data.items || [];
 };
 
 export const fetchMarketAnomalies = async (ticker) => {
   const response = await api.get(`/markets/${ticker}/anomalies`);
-  return response.data;
+  // FIX: Return the items array, not the whole response object
+  return response.data.items || [];
 };
