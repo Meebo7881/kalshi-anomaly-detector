@@ -29,3 +29,16 @@ export const fetchMarketAnomalies = async (ticker) => {
   // FIX: Return the items array, not the whole response object
   return response.data.items || [];
 };
+
+// NEW: Fetch whale trades from /stats/whales endpoint
+export const fetchWhales = async ({ hours = 168, min_usd = 500, limit = 50 } = {}) => {
+  const params = { 
+    hours, 
+    min_usd,  // Note: backend expects 'min_usd' snake_case
+    limit 
+  };
+  const response = await api.get('/stats/whales', { params });
+  return response.data.items || [];
+};
+
+export default api;

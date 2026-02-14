@@ -1,5 +1,5 @@
 from pydantic_settings import BaseSettings
-from typing import Optional
+from typing import Optional, List
 import os
 
 class Settings(BaseSettings):
@@ -31,6 +31,15 @@ class Settings(BaseSettings):
     # Monitoring Settings
     UPDATE_INTERVAL_SECONDS: int = int(os.getenv("UPDATE_INTERVAL_SECONDS", "300"))
     DETECTION_INTERVAL_SECONDS: int = int(os.getenv("DETECTION_INTERVAL_SECONDS", "300"))
+    
+    # NEW: Market categories to monitor
+    MONITORED_CATEGORIES: List[str] = [
+        "Politics",
+        "Economics", 
+        "Weather",
+        "Entertainment",
+        "Finance",
+    ]
     
     class Config:
         env_file = ".env"

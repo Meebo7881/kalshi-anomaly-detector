@@ -1,114 +1,106 @@
+import asyncio
+from datetime import datetime, timedelta, timezone
+from typing import List
+
 from celery import Celery
 from celery.utils.log import get_task_logger
-from typing import Dict, List
+from sqlalchemy.dialects.postgresql import insert
+
 from app.core.config import settings
+from app.core.database import SessionLocal
+from app.models.models import Market, Trade, Baseline, Anomaly, TraderProfile
 from app.services.kalshi_service import KalshiAPI
 from app.services.detector import AnomalyDetector
-from app.models.models import Trade, Market, Anomaly
-from app.core.database import SessionLocal
-from datetime import datetime, timedelta, timezone
-from sqlalchemy.dialects.postgresql import insert
-import asyncio
-
-celery_app = Celery('tasks', broker=settings.REDIS_URL)
 
 logger = get_task_logger(__name__)
 
-MONITORED_CATEGORIES = ['Politics', 'Entertainment', 'Economics', 'World', 'Elections']
-
-def parse_trade(trade_data: Dict, ticker: str) -> Dict:
-    """Parse trade data from Kalshi API response."""
-    created_time = trade_data.get("created_time", trade_data.get("ts", ""))
-    
-    # Handle ISO 8601 string format (e.g., "2026-02-12T02:15:52.191054Z")
-    if isinstance(created_time, str):
-        timestamp = datetime.fromisoformat(created_time.replace('Z', '+00:00'))
-    elif created_time > 9999999999:
-        timestamp = datetime.fromtimestamp(created_time / 1000, tz=timezone.utc)
-    else:
-        timestamp = datetime.fromtimestamp(created_time, tz=timezone.utc)
-
-    return {
-        "ticker": ticker,
-        "trade_id": str(trade_data.get("trade_id", f"{ticker}_{created_time}")),
-        "price": float(trade_data.get("yes_price", trade_data.get("price", 0))),
-        "volume": int(trade_data.get("count", 1)),
-        "side": trade_data.get("taker_side", trade_data.get("side", "unknown")),  # Fix: taker_side first
-        "timestamp": timestamp,
-        "trader_id": trade_data.get("trader_id")
-    }
+celery_app = Celery("kalshi_anomaly_detector")
+celery_app.conf.broker_url = settings.REDIS_URL
+celery_app.conf.result_backend = settings.REDIS_URL
 
 
 @celery_app.task(bind=True, max_retries=3)
 def update_market_data(self):
-    '''
-    Update market data with BATCH OPERATIONS.
-
-    BEFORE: 100+ individual commits
-    AFTER: 2 batch commits (markets + trades)
-    '''
+    """Update market data with better error handling and batch commits."""
     db = SessionLocal()
     kalshi = KalshiAPI(
-    api_key_id=settings.KALSHI_API_KEY_ID,
-    private_key_path=settings.KALSHI_PRIVATE_KEY_PATH,
-    max_rps=8.0,
-    redis_url=settings.REDIS_URL
-)
+        api_key_id=settings.KALSHI_API_KEY_ID,
+        private_key_path=settings.KALSHI_PRIVATE_KEY_PATH,
+        max_rps=8.0,
+        redis_url=settings.REDIS_URL,
+    )
 
-    start_time = datetime.utcnow()
+    start_time = datetime.now(timezone.utc)
+    trades_inserted = 0
+    error_count = 0
 
     try:
-        logger.info("📊 Starting market data update")
+        logger.info("Starting market data update")
 
-        # Fetch markets
-        markets = asyncio.run(kalshi.get_all_markets_from_events(
-            categories=MONITORED_CATEGORIES,
-            max_events=100,
-            max_concurrent=1
-        ))
+        # Get markets
+        markets = asyncio.run(
+            kalshi.get_all_markets_from_events(
+                categories=settings.MONITORED_CATEGORIES,
+                max_events=100,
+            )
+        )
 
         if not markets:
-            markets = asyncio.run(kalshi.get_markets(status="open", limit=200))
+            logger.warning("No markets found from events, fetching open markets")
+            markets = asyncio.run(
+                kalshi.get_markets(status="open", limit=200)
+            )
 
-        logger.info(f"✅ Found {len(markets)} markets")
+        if not markets:
+            logger.warning("No markets to process")
+            return
 
-        # BATCH INSERT 1: Markets
+        logger.info(f"Found {len(markets)} markets to process")
+
+        # Upsert markets in batch
         market_data = []
         for m in markets:
             try:
-                market_data.append({
-                    "ticker": m["ticker"],
-                    "title": m["title"],
-                    "category": m.get("category"),
-                    "close_date": datetime.fromisoformat(m["close_time"].replace('Z', '+00:00')),
-                    "status": "active"
-                })
+                close_time = None
+                if m.get("close_time"):
+                    # Kalshi uses ISO 8601 with Z
+                    close_time = datetime.fromisoformat(
+                        m["close_time"].replace("Z", "+00:00")
+                    )
+
+                market_data.append(
+                    {
+                        "ticker": m["ticker"],
+                        "title": m.get("title", ""),
+                        "category": m.get("category", "Unknown"),
+                        "status": m.get("status", "unknown"),
+                        "close_date": close_time,
+                    }
+                )
             except Exception as e:
-                logger.error(f"Error parsing market: {e}")
+                logger.error(f"Error parsing market {m.get('ticker')}: {e}", exc_info=True)
+                continue
 
         if market_data:
             stmt = insert(Market).values(market_data)
             stmt = stmt.on_conflict_do_update(
-                index_elements=['ticker'],
+                index_elements=[Market.ticker],
                 set_={
                     "title": stmt.excluded.title,
                     "category": stmt.excluded.category,
-                    "status": stmt.excluded.status
-                }
+                    "status": stmt.excluded.status,
+                    "close_date": stmt.excluded.close_date,
+                },
             )
             db.execute(stmt)
             db.commit()
-            logger.info(f"✅ Upserted {len(market_data)} markets")
 
-        # BATCH INSERT 2: Trades
-        trades_inserted = 0
-        error_count = 0
-
+        # Process trades in batches
         for i, market in enumerate(markets):
             ticker = market["ticker"]
 
-            if i > 0 and i % 20 == 0:
-                logger.info(f"   Progress: {i}/{len(markets)} markets")
+            if i % 20 == 0:
+                logger.info(f"Progress {i}/{len(markets)} markets")
 
             try:
                 trades_data = asyncio.run(kalshi.get_trades(ticker))
@@ -118,46 +110,87 @@ def update_market_data(self):
                 trade_batch = []
                 for trade in trades_data:
                     try:
-                        trade_batch.append(parse_trade(trade, ticker))
+                        created_time = trade.get("created_time") or trade.get("ts")
+
+                        if isinstance(created_time, str):
+                            # ISO 8601 string
+                            timestamp = datetime.fromisoformat(
+                                created_time.replace("Z", "+00:00")
+                            )
+                        else:
+                            # Fallback for epoch ms/s
+                            if created_time > 9_999_999_999:
+                                # ms
+                                timestamp = datetime.fromtimestamp(
+                                    created_time / 1000.0, tz=timezone.utc
+                                )
+                            else:
+                                timestamp = datetime.fromtimestamp(
+                                    created_time, tz=timezone.utc
+                                )
+
+                        trade_batch.append(
+                            {
+                                "ticker": ticker,
+                                "trade_id": str(trade.get("trade_id")),
+                                "price": float(
+                                    trade.get("yes_price")
+                                    or trade.get("price")
+                                    or 0
+                                ),
+                                "volume": int(trade.get("count") or 1),
+                                "side": trade.get("taker_side")
+                                or trade.get("side")
+                                or "unknown",
+                                "timestamp": timestamp,
+                                "trader_id": trade.get("trader_id"),
+                            }
+                        )
                     except Exception as e:
+                        logger.error(f"Parse error for trade in {ticker}: {e}", exc_info=True)
                         error_count += 1
 
                 if trade_batch:
                     stmt = insert(Trade).values(trade_batch)
-                    stmt = stmt.on_conflict_do_nothing(index_elements=['trade_id'])
+                    stmt = stmt.on_conflict_do_nothing(index_elements=[Trade.trade_id])
                     result = db.execute(stmt)
                     trades_inserted += result.rowcount
                     db.commit()
 
             except Exception as e:
-                logger.error(f"Error fetching trades for {ticker}: {e}")
+                logger.error(f"Error fetching trades for {ticker}: {e}", exc_info=True)
                 error_count += 1
-                if error_count >= 20:
+                if error_count > 20:
+                    logger.error("Too many trade fetch errors, aborting")
                     break
 
-        elapsed = (datetime.utcnow() - start_time).total_seconds()
-        logger.info(f"✅ Complete in {elapsed:.1f}s: {trades_inserted} trades, {error_count} errors")
+        elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+        logger.info(
+            f"✅ Complete in {elapsed:.1f}s: {trades_inserted} trades, {error_count} errors"
+        )
 
     except Exception as e:
-        logger.error(f"❌ Critical error: {e}", exc_info=True)
+        logger.error(f"Critical error in update_market_data: {e}", exc_info=True)
         db.rollback()
-        raise self.retry(exc=e, countdown=60 * (2 ** self.request.retries))
+        raise self.retry(exc=e, countdown=60, max_retries=3)
     finally:
         db.close()
 
-@celery_app.task(bind=True)
+
+@celery_app.task(bind=True, max_retries=3)
 def run_anomaly_detection(self):
-    '''Run anomaly detection with deduplication and alerting.'''
+    """Run anomaly detection with deduplication and alerting."""
     db = SessionLocal()
     detector = AnomalyDetector(db)
-    start_time = datetime.utcnow()
+    start_time = datetime.now(timezone.utc)
+
+    anomalies_found = 0
+    critical_anomalies: List[Anomaly] = []
 
     try:
-        logger.info("🔍 Starting anomaly detection")
-        markets = db.query(Market).filter_by(status="active").all()
+        logger.info("Starting anomaly detection")
 
-        anomalies_found = 0
-        critical_anomalies = []
+        markets = db.query(Market).filter_by(status="active").all()
 
         for market in markets:
             try:
@@ -165,26 +198,40 @@ def run_anomaly_detection(self):
                 if not baseline:
                     continue
 
-                recent_trades = db.query(Trade).filter(
-                    Trade.ticker == market.ticker,
-                    Trade.timestamp >= datetime.utcnow() - timedelta(hours=1)
-                ).all()
-
+                # Last 1 hour trades
+                recent_trades = (
+                    db.query(Trade)
+                    .filter(
+                        Trade.ticker == market.ticker,
+                        Trade.timestamp
+                        >= datetime.utcnow() - timedelta(hours=1),
+                    )
+                    .all()
+                )
                 if not recent_trades:
                     continue
 
                 total_volume = sum(t.volume for t in recent_trades)
-                is_anomaly, z_score = detector.detect_volume_anomaly(market.ticker, total_volume)
-
+                is_anomaly, z_score = detector.detect_volume_anomaly(
+                    market.ticker, total_volume
+                )
                 if not is_anomaly:
                     continue
 
                 # Calculate metrics
                 vpin = detector.calculate_vpin(market.ticker)
-                whales = detector.detect_whale_trades(market.ticker, threshold_usd=2000)
-                is_corr, corr_score = detector.detect_price_volume_correlation(market.ticker)
+                whales = detector.detect_whale_trades(
+                    market.ticker, threshold_usd=None
+                )
+                is_corr, corr_score = detector.detect_price_volume_correlation(
+                    market.ticker
+                )
 
-                days_to_close = (market.close_date - datetime.utcnow()).days if market.close_date else 999
+                days_to_close = (
+                    (market.close_date - datetime.utcnow()).days
+                    if market.close_date
+                    else 999
+                )
 
                 score = detector.calculate_anomaly_score(
                     volume_zscore=z_score,
@@ -192,23 +239,24 @@ def run_anomaly_detection(self):
                     days_to_close=days_to_close,
                     vpin=vpin,
                     price_volume_corr=corr_score,
-                    whale_count=len(whales)
+                    whale_count=len(whales),
                 )
 
-                # Log with deduplication
+                details = {
+                    "zscore": float(z_score),
+                    "volume": total_volume,
+                    "vpin": float(vpin),
+                    "whale_count": len(whales),
+                    "whale_details": whales[:5],
+                    "price_volume_corr": float(corr_score),
+                    "days_to_close": days_to_close,
+                }
+
                 anomaly = detector.log_anomaly(
                     ticker=market.ticker,
                     anomaly_type="volume",
                     score=score,
-                    details={
-                        "zscore": float(z_score),
-                        "volume": total_volume,
-                        "vpin": float(vpin),
-                        "whale_trades": len(whales),
-                        "whale_details": whales[:5],
-                        "price_volume_corr": float(corr_score),
-                        "days_to_close": days_to_close
-                    }
+                    details=details,
                 )
 
                 anomalies_found += 1
@@ -216,39 +264,41 @@ def run_anomaly_detection(self):
                     critical_anomalies.append(anomaly)
 
             except Exception as e:
-                logger.error(f"Detection error for {market.ticker}: {e}")
+                logger.error(
+                    f"Detection error for {market.ticker}: {e}", exc_info=True
+                )
+                continue
 
-        elapsed = (datetime.utcnow() - start_time).total_seconds()
-        logger.info(f"✅ Complete in {elapsed:.1f}s: {anomalies_found} found, {len(critical_anomalies)} critical")
-
+        # Send alerts for critical anomalies (stub)
         if critical_anomalies:
-            send_critical_alerts.delay([a.id for a in critical_anomalies])
+            logger.info(
+                f"Detection complete! {len(critical_anomalies)} critical alerts"
+            )
+        else:
+            logger.info(f"Detection complete! {anomalies_found} anomalies found, 0 critical")
+
+        elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+        logger.info(f"✅ Anomaly detection complete in {elapsed:.1f}s")
 
     except Exception as e:
-        logger.error(f"❌ Error: {e}", exc_info=True)
+        logger.error(f"Error in anomaly detection: {e}", exc_info=True)
+        raise self.retry(exc=e, countdown=60, max_retries=3)
     finally:
         db.close()
+
 
 @celery_app.task
-def send_critical_alerts(anomaly_ids: List[int]):
-    '''Send notifications for critical anomalies.'''
+def send_anomaly_alerts(anomaly_ids: List[int]):
+    """Send notifications for critical anomalies (placeholder)."""
     db = SessionLocal()
     try:
-        anomalies = db.query(Anomaly).filter(Anomaly.id.in_(anomaly_ids)).all()
+        anomalies = (
+            db.query(Anomaly).filter(Anomaly.id.in_(anomaly_ids)).all()
+        )
         for anomaly in anomalies:
-            logger.critical(f"🚨 CRITICAL: {anomaly.ticker} (score: {anomaly.score:.2f})")
-            # TODO: Implement Slack/email notifications
+            logger.critical(
+                f"CRITICAL {anomaly.ticker} score {anomaly.score:.2f}"
+            )
+            # TODO: Implement Slack/email/webhook notifications here
     finally:
         db.close()
-
-# Celery Beat schedule
-celery_app.conf.beat_schedule = {
-    'update-markets': {
-        'task': 'app.tasks.monitor.update_market_data',
-        'schedule': float(settings.UPDATE_INTERVAL_SECONDS or 300),
-    },
-    'detect-anomalies': {
-        'task': 'app.tasks.monitor.run_anomaly_detection',
-        'schedule': float(settings.DETECTION_INTERVAL_SECONDS or 300),
-    },
-}

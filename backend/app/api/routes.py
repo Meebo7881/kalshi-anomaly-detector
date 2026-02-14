@@ -26,6 +26,43 @@ def format_anomaly(anomaly):
 
 router = APIRouter()
 
+@router.get("/stats/whales")
+async def get_whale_stats(
+    db: Session = Depends(get_db),
+    hours: int = Query(24, ge=1, le=168),
+    min_usd: float = Query(1000.0, ge=100.0),
+    limit: int = Query(50, ge=1, le=200),
+):
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+
+    trades = (
+        db.query(Trade)
+        .filter(Trade.timestamp >= cutoff)
+        .filter((Trade.volume * Trade.price / 100.0) >= min_usd)
+        .order_by((Trade.volume * Trade.price / 100.0).desc())
+        .limit(limit)
+        .all()
+    )
+
+    items = [
+        {
+            "ticker": t.ticker,
+            "side": t.side,
+            "volume": t.volume,
+            "price": float(t.price),
+            "usd_value": float(t.volume * t.price / 100.0),
+            "timestamp": t.timestamp.isoformat(),
+        }
+        for t in trades
+    ]
+
+    return {
+        "total": len(items),
+        "items": items,
+        "hours": hours,
+        "min_usd": min_usd,
+    }
+
 @router.get("/health")
 async def health():
     return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
